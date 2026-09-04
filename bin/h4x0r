@@ -1,0 +1,1003 @@
+#!/usr/bin/env bash
+# h4x0r - spin up a 90s hacker-movie workspace in your terminal multiplexer.
+#
+# Matrix rain, a radar sweep, a fake intrusion log, a memory dump, live syslog
+# and sockets, btop, and a music visualiser - laid out asymmetrically so it
+# reads as a break-in rather than a spreadsheet. Works with herdr or tmux; one
+# layout spec drives both.
+#
+#   h4x0r                    build it and jump to it
+#   h4x0r --layout cinema    auto (default), grid (12 panes), cinema (5),
+#                            minimal (3). auto picks one to fit the window.
+#   h4x0r --palette amber    theme (default), phosphor, amber, ice, crimson,
+#                            synthwave, or mono
+#   h4x0r --mux tmux         force a backend (herdr, tmux, or auto)
+#   h4x0r --instant          skip the staged reveal
+#   h4x0r -l "THE GIBSON"    name it something else (herdr workspace label)
+#   h4x0r --no-focus         build it in the background
+#   h4x0r --no-music         skip cliamp, run one more rain instead
+#   h4x0r --status [--json]  what is running, and where
+#   h4x0r --list             list live sessions (exit 1 when there are none)
+#   h4x0r --close            tear it down
+#   h4x0r --rebuild          tear down a running one and build it fresh
+#   h4x0r --refresh          restore my versions of the pane scripts
+#   h4x0r --extract          write the pane scripts out and stop
+#
+# Pane scripts are written to ~/.local/share/hacker-panes on first run and are
+# never overwritten after that, so edit them freely (--refresh restores mine).
+
+set -uo pipefail
+
+HACKER_DIR="${HACKER_DIR:-$HOME/.local/share/hacker-panes}"
+TMUX_SESSION="${H4X0R_TMUX_SESSION:-h4x0r}"
+THEME_DIR="${H4X0R_THEME_DIR:-$HOME/.local/state/omarchy/current/theme}"
+LABEL="☠ THE GIBSON ☠"
+MUX="${H4X0R_MUX:-auto}"
+LAYOUT="${H4X0R_LAYOUT:-auto}"
+THEME="${H4X0R_THEME:-auto}"
+FOCUS=1
+MUSIC=auto
+INSTANT=0
+REFRESH=""
+REBUILD=0
+JSON=0
+ACTION=create
+
+die()  { printf '\033[38;5;196mh4x0r:\033[0m %s\n' "$*" >&2; exit 1; }
+note() { printf '\033[38;5;41m  ::\033[0m %s\n' "$*"; }
+
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -l|--label)  LABEL="${2:-}";  [ -n "$LABEL" ]  || die "--label needs a value";  shift 2 ;;
+    -m|--mux)    MUX="${2:-}";    [ -n "$MUX" ]    || die "--mux needs a value";    shift 2 ;;
+    --layout)    LAYOUT="${2:-}"; [ -n "$LAYOUT" ] || die "--layout needs a value"; shift 2 ;;
+    --palette|--theme)
+                 THEME="${2:-}";  [ -n "$THEME" ]  || die "--palette needs a value"; shift 2 ;;
+    --instant)   INSTANT=1; shift ;;
+    --staged)    INSTANT=0; shift ;;
+    --no-focus)  FOCUS=0; shift ;;
+    --focus)     FOCUS=1; shift ;;
+    --music)     MUSIC=yes; shift ;;
+    --no-music)  MUSIC=no; shift ;;
+    --refresh)   REFRESH=1; shift ;;
+    --rebuild)   REBUILD=1; shift ;;
+    --json)      JSON=1; shift ;;
+    --status)    ACTION=status; shift ;;
+    --close)     ACTION=close; shift ;;
+    --list)      ACTION=list; shift ;;
+    --extract)   ACTION=extract; shift ;;
+    -h|--help)   usage ;;
+    *)           die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+case "$MUX"    in auto|herdr|tmux) ;;      *) die "unknown multiplexer '$MUX' (herdr, tmux, or auto)" ;; esac
+case "$LAYOUT" in auto|grid|cinema|minimal) ;; *) die "unknown layout '$LAYOUT' (auto, grid, cinema, or minimal)" ;; esac
+case "$THEME" in
+  auto|theme|omarchy|phosphor|green|amber|ice|crimson|synthwave|mono) ;;
+  *) die "unknown palette '$THEME' (theme, phosphor, amber, ice, crimson, synthwave, mono)" ;;
+esac
+command -v python3 >/dev/null || die "python3 is required"
+
+# ---------------------------------------------------------------------------
+# backends
+# ---------------------------------------------------------------------------
+herdr_ok() { command -v herdr >/dev/null && herdr workspace list >/dev/null 2>&1; }
+tmux_ok()  { command -v tmux  >/dev/null; }
+
+resolve_mux() {
+  case "$MUX" in
+    herdr) herdr_ok || die "herdr is not installed or no server is reachable"; echo herdr ;;
+    tmux)  tmux_ok  || die "tmux is not installed"; echo tmux ;;
+    auto)
+      if herdr_ok; then echo herdr
+      elif tmux_ok; then echo tmux
+      else die "no supported multiplexer found (herdr or tmux)"; fi ;;
+  esac
+}
+
+jget() { python3 -c 'import sys,json
+d=json.load(sys.stdin)
+try:
+    for k in sys.argv[1].split("."): d = d[int(k)] if k.isdigit() else d[k]
+    print(d)
+except Exception: sys.exit(1)' "$1"; }
+
+# --- herdr -----------------------------------------------------------------
+h_live()  { herdr workspace list 2>/dev/null | python3 -c 'import sys,json
+lab=sys.argv[1]
+print(" ".join(w["workspace_id"] for w in json.load(sys.stdin)["result"]["workspaces"] if w.get("label")==lab))' "$LABEL"; }
+h_panes() { herdr pane list --workspace "$1" 2>/dev/null | python3 -c 'import sys,json;print(len(json.load(sys.stdin)["result"]["panes"]))' 2>/dev/null || echo 0; }
+h_new()   { herdr workspace create --cwd "$HOME" --label "$LABEL" --no-focus 2>/dev/null; }
+h_split() { herdr pane split "$1" --direction "$2" --ratio "$3" --cwd "$HOME" --no-focus 2>/dev/null | jget result.pane.pane_id; }
+h_run()   { herdr pane rename "$1" "$2" >/dev/null 2>&1; herdr pane run "$1" "$3" >/dev/null 2>&1; }
+h_close() { for w in $(h_live); do herdr workspace close "$w" >/dev/null 2>&1 && note "closed $w"; done; }
+# clients and the server share the comm name; the server's cmdline ends " server"
+h_clients() { pgrep -x herdr -a 2>/dev/null | grep -cv ' server$'; }
+h_focus() {
+  herdr workspace focus "$1" >/dev/null 2>&1
+  if [ "$(h_clients)" -eq 0 ] && command -v omarchy-launch-terminal-herdr >/dev/null; then
+    note "no herdr window open - launching one"
+    setsid omarchy-launch-terminal-herdr >/dev/null 2>&1 &
+  fi
+}
+
+# --- tmux ------------------------------------------------------------------
+t_live()  { tmux has-session -t "$TMUX_SESSION" 2>/dev/null && echo "$TMUX_SESSION"; }
+t_panes() { tmux list-panes -t "$TMUX_SESSION" 2>/dev/null | wc -l; }
+t_new() {
+  local cols="${H4X0R_TMUX_COLS:-250}" rows="${H4X0R_TMUX_ROWS:-60}"
+  if [ -z "${H4X0R_TMUX_COLS:-}" ] && [ -t 1 ]; then
+    cols=$(tput cols 2>/dev/null || echo 250); rows=$(tput lines 2>/dev/null || echo 60)
+  fi
+  [ "$cols" -lt 120 ] && cols=250
+  [ "$rows" -lt 30  ] && rows=60
+  tmux new-session -d -s "$TMUX_SESSION" -c "$HOME" -x "$cols" -y "$rows" \
+    -P -F '#{pane_id}' 2>/dev/null || return 1
+  tmux setw -t "$TMUX_SESSION" pane-border-status top               >/dev/null 2>&1
+  tmux setw -t "$TMUX_SESSION" pane-border-format ' #{pane_title} ' >/dev/null 2>&1
+  tmux setw -t "$TMUX_SESSION" pane-border-style        'fg=colour22' >/dev/null 2>&1
+  tmux setw -t "$TMUX_SESSION" pane-active-border-style 'fg=colour41' >/dev/null 2>&1
+  tmux set-option -t "$TMUX_SESSION" status off                     >/dev/null 2>&1
+}
+# herdr ratios say what the ORIGINAL pane keeps; tmux -l sizes the NEW pane.
+t_split() {
+  local pct
+  pct=$(python3 -c "print(max(5,min(95,round((1-float('$3'))*100))))")
+  tmux split-window -t "$1" $([ "$2" = right ] && echo -h || echo -v) -l "${pct}%" \
+    -c "$HOME" -P -F '#{pane_id}' 2>/dev/null
+}
+t_run()   { tmux select-pane -t "$1" -T "$2" >/dev/null 2>&1; tmux send-keys -t "$1" "$3" C-m >/dev/null 2>&1; }
+t_close() { tmux kill-session -t "$TMUX_SESSION" 2>/dev/null && note "closed tmux session $TMUX_SESSION"; }
+t_focus() {
+  if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$TMUX_SESSION" >/dev/null 2>&1; return; fi
+  local term=""
+  for c in omarchy-launch-terminal "${TERMINAL:-}" foot ghostty alacritty kitty; do
+    [ -n "$c" ] && command -v "$c" >/dev/null && { term="$c"; break; }
+  done
+  [ -n "$term" ] || { note "attach with: tmux attach -t $TMUX_SESSION"; return; }
+  if [ "$term" = omarchy-launch-terminal ]; then
+    setsid omarchy-launch-terminal tmux attach -t "$TMUX_SESSION" >/dev/null 2>&1 &
+  else
+    setsid "$term" -e tmux attach -t "$TMUX_SESSION" >/dev/null 2>&1 &
+  fi
+}
+
+# --- dispatch --------------------------------------------------------------
+BACKEND=$(resolve_mux) || exit 1
+case "$BACKEND" in
+  herdr) live() { h_live; }; panes() { h_panes "$@"; }; close_all() { h_close; } ;;
+  tmux)  live() { t_live; }; panes() { t_panes "$@"; }; close_all() { t_close; } ;;
+esac
+
+# ---------------------------------------------------------------------------
+# read-only actions
+# ---------------------------------------------------------------------------
+if [ "$ACTION" = status ] || [ "$ACTION" = list ]; then
+  ids=$(live)
+  first=$(printf '%s' "$ids" | awk '{print $1}')
+  n=0; [ -n "$first" ] && n=$(panes "$first")
+  if [ "$JSON" = 1 ]; then
+    python3 -c 'import json,sys
+print(json.dumps({"backend":sys.argv[1],"running":bool(sys.argv[2]),"id":sys.argv[2],
+                  "panes":int(sys.argv[3]),"label":sys.argv[4],
+                  "herdr":sys.argv[5]=="1","tmux":sys.argv[6]=="1",
+                  "layout":sys.argv[7],"theme":sys.argv[8]}))' \
+      "$BACKEND" "$first" "$n" "$LABEL" \
+      "$(herdr_ok && echo 1 || echo 0)" "$(tmux_ok && echo 1 || echo 0)" "$LAYOUT" "$THEME"
+  elif [ -n "$first" ]; then
+    note "$BACKEND: $first is up ($n panes)"
+  else
+    note "$BACKEND: nothing running" >&2
+  fi
+  [ -n "$first" ] || exit 1
+  exit 0
+fi
+
+if [ "$ACTION" = close ]; then
+  [ -n "$(live)" ] || { note "nothing to close"; exit 0; }
+  close_all
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# pane scripts
+# ---------------------------------------------------------------------------
+_payload() { # _payload <name>  (content on stdin)
+  local f="$HACKER_DIR/$1"
+  if [ -e "$f" ] && [ -z "$REFRESH" ]; then cat >/dev/null; return; fi
+  cat > "$f" && chmod +x "$f"
+}
+mkdir -p "$HACKER_DIR" || die "cannot create $HACKER_DIR"
+
+_payload palette.py <<'__PAYLOAD_PALETTE_PY__'
+"""Colors for the pane programs.
+
+Everything comes from H4X0R_* environment variables as #rrggbb, with the
+classic phosphor-green terminal palette as the fallback. h4x0r fills these in
+from the current Omarchy theme when it is asked to follow the theme, so the
+whole grid recolors with the desktop.
+"""
+import os
+
+DEFAULTS = {
+    "HEAD":   "ffffff",   # brightest point - rain heads, key labels
+    "BRIGHT": "87ff87",   # one step down
+    "MAIN":   "00d75f",   # the body color everything is written in
+    "MID":    "00af5f",
+    "DIM":    "00875f",   # subdued detail
+    "DEEP":   "005f00",   # nearly background - grids, trails
+    "ALERT":  "ffaf00",   # something happened
+    "WARN":   "ff2a2a",   # something bad happened
+}
+
+
+def _rgb(name):
+    raw = (os.environ.get("H4X0R_" + name) or DEFAULTS[name]).strip().lstrip("#")
+    if len(raw) == 3:
+        raw = "".join(c * 2 for c in raw)
+    try:
+        return tuple(int(raw[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        d = DEFAULTS[name]
+        return tuple(int(d[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def fg(rgb):
+    return "\033[38;2;%d;%d;%dm" % rgb
+
+
+RGB = {k: _rgb(k) for k in DEFAULTS}
+HEAD, BRIGHT, MAIN = fg(RGB["HEAD"]), fg(RGB["BRIGHT"]), fg(RGB["MAIN"])
+MID, DIM, DEEP = fg(RGB["MID"]), fg(RGB["DIM"]), fg(RGB["DEEP"])
+ALERT, WARN = fg(RGB["ALERT"]), fg(RGB["WARN"])
+RESET = "\033[0m"
+
+
+def ramp(start, end, steps):
+    """A list of escapes fading start -> end, for sweeps and pulses."""
+    a, b = RGB[start], RGB[end]
+    out = []
+    for i in range(steps):
+        t = i / max(1, steps - 1)
+        out.append(fg(tuple(round(a[j] + (b[j] - a[j]) * t) for j in range(3))))
+    return out
+
+
+def bar(name):
+    """Truecolor escape by name, for callers that want one off the shelf."""
+    return fg(RGB[name])
+__PAYLOAD_PALETTE_PY__
+
+_payload boot.py <<'__PAYLOAD_BOOT_PY__'
+#!/usr/bin/env python3
+"""Types a short bring-up line, then hands the pane to its real program.
+
+Used by h4x0r's staged reveal: every pane spends a beat pretending to come
+online before the actual thing starts. argv is (label, command-string).
+"""
+import os, random, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from palette import HEAD, MAIN, DIM, DEEP, ALERT, RESET
+
+STEPS = [
+    "allocating tty", "attaching pty", "keying channel", "negotiating cipher",
+    "mapping segment", "opening socket", "priming buffer", "seeding entropy",
+    "handshake accepted", "route confirmed", "clearance granted",
+]
+
+def typeout(text, color, delay=0.010):
+    sys.stdout.write(color)
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(delay)
+    sys.stdout.write(RESET + "\n")
+    sys.stdout.flush()
+
+def main():
+    label = (sys.argv[1] if len(sys.argv) > 1 else "NODE").strip().strip("▓").strip()
+    cmd = sys.argv[2] if len(sys.argv) > 2 else "true"
+    try:
+        sys.stdout.write("\033[2J\033[H")
+        typeout("> BRINGING UP " + label, HEAD)
+        for step in random.sample(STEPS, 2):
+            typeout("  " + step + " ... " + "ok", DIM, 0.005)
+        sys.stdout.write(DEEP + "  " + "-" * 28 + RESET + "\n")
+        sys.stdout.flush()
+        time.sleep(0.20)
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    os.execvp("bash", ["bash", "-c", cmd])
+
+main()
+__PAYLOAD_BOOT_PY__
+
+_payload matrix.py <<'__PAYLOAD_MATRIX_PY__'
+#!/usr/bin/env python3
+"""Green rain. The one true 90s hacker movie screensaver."""
+import os, random, shutil, signal, sys, time
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from palette import HEAD, BRIGHT, MAIN, MID, DIM, DEEP, ALERT, WARN, RESET, ramp
+
+
+CH = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789<>=*+:.|/\\"
+# colors come from palette.py / the H4X0R_* environment
+
+class Col:
+    def __init__(self, h):
+        self.reset(h, first=True)
+    def reset(self, h, first=False):
+        self.y = random.uniform(-h, 0) if first else random.uniform(-20, -1)
+        self.speed = random.uniform(0.25, 1.1)
+        self.length = random.randint(6, max(8, h - 4))
+        self.last = None
+
+def main():
+    w, h = shutil.get_terminal_size()
+    cols = [Col(h) for _ in range(w)]
+    dirty = [True]
+
+    def on_resize(*_):
+        dirty[0] = True
+    signal.signal(signal.SIGWINCH, on_resize)
+
+    out = sys.stdout.write
+    out("\033[?25l\033[2J")
+    try:
+        while True:
+            if dirty[0]:
+                dirty[0] = False
+                w, h = shutil.get_terminal_size()
+                cols = [Col(h) for _ in range(w)]
+                out("\033[2J")
+            buf = []
+            for x, c in enumerate(cols):
+                prev = int(c.y)
+                c.y += c.speed
+                y = int(c.y)
+                if y == prev:
+                    # flicker a random glyph inside the trail
+                    if random.random() < 0.28:
+                        fy = y - random.randint(1, c.length)
+                        if 0 <= fy < h:
+                            buf.append(f"\033[{fy+1};{x+1}H{MID}{random.choice(CH)}")
+                    continue
+                if 0 <= prev < h:
+                    buf.append(f"\033[{prev+1};{x+1}H{BRIGHT}{random.choice(CH)}")
+                if 0 <= y < h:
+                    buf.append(f"\033[{y+1};{x+1}H{HEAD}{random.choice(CH)}")
+                tail = y - c.length
+                if 0 <= tail < h:
+                    buf.append(f"\033[{tail+1};{x+1}H ")
+                fade = y - c.length + 2
+                if 0 <= fade < h:
+                    buf.append(f"\033[{fade+1};{x+1}H{DIM}{random.choice(CH)}")
+                if tail > h:
+                    c.reset(h)
+            if buf:
+                out("".join(buf) + RESET)
+                sys.stdout.flush()
+            time.sleep(0.055)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        out("\033[?25h\033[0m\033[2J\033[H")
+        sys.stdout.flush()
+
+main()
+__PAYLOAD_MATRIX_PY__
+
+_payload radar.py <<'__PAYLOAD_RADAR_PY__'
+#!/usr/bin/env python3
+"""Sweeping radar with fading contacts."""
+import math, random, shutil, signal, sys, time
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from palette import HEAD, BRIGHT, MAIN, MID, DIM, DEEP, ALERT, WARN, RESET, ramp
+
+
+R = RESET
+SWEEP = ramp("HEAD", "DEEP", 6)
+GRID = DEEP
+BLIP = [HEAD, ALERT, MAIN, DEEP]
+LBL = MAIN
+
+def main():
+    dirty = [True]
+    signal.signal(signal.SIGWINCH, lambda *_: dirty.__setitem__(0, True))
+    sys.stdout.write("\033[?25l\033[2J")
+    ang = 0.0
+    contacts = []
+    try:
+        while True:
+            if dirty[0]:
+                dirty[0] = False
+                sys.stdout.write("\033[2J")
+            w, h = shutil.get_terminal_size()
+            cx, cy = w / 2, h / 2
+            rad = max(3, min(cx / 2.05, cy - 1.5))
+            buf = ["\033[H"]
+            ang = (ang + 0.09) % (2 * math.pi)
+
+            if random.random() < 0.05 and len(contacts) < 9:
+                a = random.uniform(0, 2 * math.pi)
+                contacts.append([a, random.uniform(0.25, 0.97), 1.0,
+                                 f"{random.choice('ABCDEFGHKLMNPRSTVXZ')}{random.randint(10,99)}"])
+
+            grid = [[" " for _ in range(w)] for _ in range(h)]
+            color = [[None for _ in range(w)] for _ in range(h)]
+
+            def put(x, y, ch, col):
+                xi, yi = int(round(x)), int(round(y))
+                if 0 <= xi < w and 0 <= yi < h:
+                    grid[yi][xi] = ch
+                    color[yi][xi] = col
+
+            for ring in (0.33, 0.66, 1.0):
+                steps = max(24, int(rad * ring * 14))
+                for i in range(steps):
+                    a = 2 * math.pi * i / steps
+                    put(cx + math.cos(a) * rad * ring * 2, cy + math.sin(a) * rad * ring, "·", GRID)
+            for i in range(int(rad * 2)):
+                put(cx - rad * 2 + i * 2, cy, "-", GRID)
+            for i in range(int(rad * 2)):
+                put(cx, cy - rad + i, "|", GRID)
+
+            for k, col in enumerate(SWEEP):
+                a = ang - k * 0.13
+                for i in range(1, int(rad * 2)):
+                    t = i / (rad * 2)
+                    put(cx + math.cos(a) * rad * 2 * t, cy + math.sin(a) * rad * t,
+                        "*" if k == 0 else "+", col)
+
+            for c in contacts:
+                da = (ang - c[0]) % (2 * math.pi)
+                if da < 0.16:
+                    c[2] = 1.0
+                c[2] -= 0.006
+                x = cx + math.cos(c[0]) * rad * 2 * c[1]
+                y = cy + math.sin(c[0]) * rad * c[1]
+                idx = min(3, int((1 - c[2]) * 4))
+                put(x, y, "@", BLIP[idx])
+                if c[2] > 0.55:
+                    for j, ch in enumerate(c[3]):
+                        put(x + 2 + j, y, ch, BLIP[idx])
+            contacts = [c for c in contacts if c[2] > 0]
+
+            hdr = f" SECTOR SWEEP {math.degrees(ang):05.1f}DEG  CONTACTS:{len(contacts):02d} "
+            for j, ch in enumerate(hdr[:w]):
+                grid[0][j] = ch
+                color[0][j] = LBL
+
+            cur = None
+            for y in range(h):
+                row = []
+                for x in range(w):
+                    col = color[y][x]
+                    if col != cur:
+                        row.append(col or R)
+                        cur = col
+                    row.append(grid[y][x])
+                buf.append("".join(row))
+                if y < h - 1:
+                    buf.append("\r\n")
+            buf.append(R)
+            sys.stdout.write("".join(buf))
+            sys.stdout.flush()
+            time.sleep(0.06)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write("\033[?25h\033[0m\033[2J\033[H")
+
+main()
+__PAYLOAD_RADAR_PY__
+
+_payload banner.py <<'__PAYLOAD_BANNER_PY__'
+#!/usr/bin/env python3
+"""Big blocky banner + clock. Cycles through the required movie slogans."""
+import shutil, sys, time, random
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from palette import HEAD, BRIGHT, MAIN, MID, DIM, DEEP, ALERT, WARN, RESET, ramp
+
+from datetime import datetime
+
+R = RESET
+# a pulse that swells from near-background up to the brightest point and back
+_UP = ramp("DEEP", "HEAD", 7)
+PULSE = _UP + list(reversed(_UP[1:-1]))
+DIM = DEEP
+
+F = {
+ "A":["01110","10001","10001","11111","10001","10001","10001"],
+ "B":["11110","10001","10001","11110","10001","10001","11110"],
+ "C":["01110","10001","10000","10000","10000","10001","01110"],
+ "D":["11110","10001","10001","10001","10001","10001","11110"],
+ "E":["11111","10000","10000","11110","10000","10000","11111"],
+ "F":["11111","10000","10000","11110","10000","10000","10000"],
+ "G":["01110","10001","10000","10111","10001","10001","01111"],
+ "H":["10001","10001","10001","11111","10001","10001","10001"],
+ "I":["11111","00100","00100","00100","00100","00100","11111"],
+ "J":["00111","00010","00010","00010","00010","10010","01100"],
+ "K":["10001","10010","10100","11000","10100","10010","10001"],
+ "L":["10000","10000","10000","10000","10000","10000","11111"],
+ "M":["10001","11011","10101","10101","10001","10001","10001"],
+ "N":["10001","11001","10101","10011","10001","10001","10001"],
+ "O":["01110","10001","10001","10001","10001","10001","01110"],
+ "P":["11110","10001","10001","11110","10000","10000","10000"],
+ "Q":["01110","10001","10001","10001","10101","10010","01101"],
+ "R":["11110","10001","10001","11110","10100","10010","10001"],
+ "S":["01111","10000","10000","01110","00001","00001","11110"],
+ "T":["11111","00100","00100","00100","00100","00100","00100"],
+ "U":["10001","10001","10001","10001","10001","10001","01110"],
+ "V":["10001","10001","10001","10001","10001","01010","00100"],
+ "W":["10001","10001","10001","10101","10101","11011","10001"],
+ "X":["10001","01010","00100","00100","00100","01010","10001"],
+ "Y":["10001","01010","00100","00100","00100","00100","00100"],
+ "Z":["11111","00001","00010","00100","01000","10000","11111"],
+ "0":["01110","10001","10011","10101","11001","10001","01110"],
+ "1":["00100","01100","00100","00100","00100","00100","01110"],
+ "2":["01110","10001","00001","00110","01000","10000","11111"],
+ "3":["11110","00001","00001","01110","00001","00001","11110"],
+ "4":["00010","00110","01010","10010","11111","00010","00010"],
+ "5":["11111","10000","11110","00001","00001","10001","01110"],
+ "6":["00110","01000","10000","11110","10001","10001","01110"],
+ "7":["11111","00001","00010","00100","01000","01000","01000"],
+ "8":["01110","10001","10001","01110","10001","10001","01110"],
+ "9":["01110","10001","10001","01111","00001","00010","01100"],
+ ":":["00000","00100","00100","00000","00100","00100","00000"],
+ "!":["00100","00100","00100","00100","00100","00000","00100"],
+ " ":["00000","00000","00000","00000","00000","00000","00000"],
+}
+
+MSGS = ["ACCESS GRANTED", "HACK THE PLANET", "ROOT SHELL", "I AM IN",
+        "MAINFRAME 1995", "ENHANCE", "DECRYPTING", "NO CARRIER"]
+
+def render(text, on, off):
+    rows = ["" for _ in range(7)]
+    for ch in text.upper():
+        g = F.get(ch, F[" "])
+        for i in range(7):
+            rows[i] += "".join(on if b == "1" else off for b in g[i]) + off * 1
+    return rows
+
+def main():
+    sys.stdout.write("\033[?25l\033[2J")
+    i, t0 = 0, time.time()
+    try:
+        while True:
+            w, h = shutil.get_terminal_size()
+            msg = MSGS[i % len(MSGS)]
+            if len(msg) * 12 > w and len(msg) * 6 > w:
+                msg = max(msg.split(" "), key=len)
+            wide = len(msg) * 12 <= w
+            on, off = ("\u2588\u2588", "  ") if wide else ("\u2588", " ")
+            c = PULSE[int(time.time() * 6) % len(PULSE)]
+            rows = render(msg, on, off)
+            clock = render(datetime.now().strftime("%H:%M:%S"), "\u2593" * len(on), " " * len(off))
+            body = rows + [""] + clock if h >= 18 else rows
+            top = max(0, (h - len(body)) // 2)
+            out = ["\033[H\033[2J"]
+            out.append("\n" * top)
+            for k, r in enumerate(body):
+                col = c if k < 7 else DIM
+                out.append(f"{col}{r[:w].center(w) if len(r) < w else r[:w]}{R}\n")
+            sys.stdout.write("".join(out))
+            sys.stdout.flush()
+            time.sleep(0.15)
+            if time.time() - t0 > 4:
+                t0, i = time.time(), i + 1
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write("\033[?25h\033[0m\033[2J\033[H")
+
+main()
+__PAYLOAD_BANNER_PY__
+
+_payload hexfeed.py <<'__PAYLOAD_HEXFEED_PY__'
+#!/usr/bin/env python3
+"""Scrolling memory dump. Pure theatre: bytes come from os.urandom()."""
+import os, random, shutil, sys, time
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from palette import HEAD, BRIGHT, MAIN, MID, DIM, DEEP, ALERT, WARN, RESET, ramp
+
+
+G, GB, GD, W, A = MAIN, BRIGHT, DEEP, HEAD, ALERT
+R = RESET
+
+SEGMENTS = ["kernel.text", "libcrypto.so", "heap/anon", "stack/main", "vmlinuz.core", "shadow.tbl", "ice.vault"]
+NOTES = [
+    "SIGNATURE MATCH", "ENTROPY LOW", "KEY SCHEDULE FOUND", "XOR PATTERN 0x5A",
+    "BLOCK DECRYPTED", "CHECKSUM OK", "SALT RECOVERED", "PRIVATE EXPONENT",
+]
+
+def line(addr, width):
+    n = 8 if width < 74 else 16
+    b = os.urandom(n)
+    hx = " ".join(f"{x:02x}" for x in b)
+    txt = "".join(chr(x) if 32 <= x < 127 else "." for x in b)
+    return f"{GD}{addr:08X}{R}  {G}{hx}{R}  {GB}|{txt}|{R}"
+
+def main():
+    addr = random.randrange(0x7F0000, 0x7FFFFF) & ~0xF
+    seg = random.choice(SEGMENTS)
+    sys.stdout.write("\033[?25l")
+    try:
+        print(f"{W}:: memdump{R} {GD}--follow{R} {G}{seg}{R}")
+        while True:
+            w, _ = shutil.get_terminal_size()
+            r = random.random()
+            if r < 0.035:
+                seg = random.choice(SEGMENTS)
+                print(f"{GD}{'-'*max(10, min(w-1, 48))}{R}")
+                print(f"{W}>> mapping {A}{seg}{R} {GD}@ {addr:#010x}{R}")
+            elif r < 0.075:
+                print(f"{A}  ** {random.choice(NOTES)} {GD}[+{random.randint(2,880)}b]{R}")
+            else:
+                print(line(addr, w))
+                addr += 16
+            sys.stdout.flush()
+            time.sleep(random.uniform(0.03, 0.16))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write("\033[?25h\033[0m")
+
+main()
+__PAYLOAD_HEXFEED_PY__
+
+_payload intrusion.py <<'__PAYLOAD_INTRUSION_PY__'
+#!/usr/bin/env python3
+"""Fake intrusion log. Nothing here touches the network - it is all random.choice()."""
+import random, shutil, sys, time
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from palette import HEAD, BRIGHT, MAIN, MID, DIM, DEEP, ALERT, WARN, RESET, ramp
+
+from datetime import datetime
+
+G, GB, GD, W, A, RD = MAIN, BRIGHT, DEEP, HEAD, ALERT, WARN
+R = RESET
+
+HOSTS = ["gibson.ellingson", "encom-mcp-01", "cyberdyne-t800", "wopr.norad", "zion-mainframe",
+         "tyrell-nexus6", "skynet-relay", "yoyodyne-hq", "setec-astronomy", "acme-blackice"]
+SERVICES = [("22", "ssh-2.0"), ("23", "telnet"), ("80", "httpd/1.0"), ("443", "tls-1.3"),
+            ("1337", "elite-d"), ("3306", "mysqld"), ("31337", "backorifice"), ("8080", "proxy")]
+PHASES = ["TRACE", "PROBE", "CRACK", "SPOOF", "TUNNEL", "INJECT", "PIVOT", "EXFIL"]
+ICE = ["black ice layer", "kanji firewall", "cortex gatekeeper", "sentinel daemon", "garbage-in filter"]
+
+def ip():
+    return f"10.{random.randint(0,254)}.{random.randint(0,254)}.{random.randint(1,254)}"
+
+def bar(w):
+    n = max(8, min(28, w - 40))
+    f = random.randint(0, n)
+    return f"{G}{'#'*f}{GD}{'.'*(n-f)}{R}"
+
+def main():
+    sys.stdout.write("\033[?25l")
+    try:
+        print(f"{W}[ SATELLITE UPLINK ESTABLISHED ]{R} {GD}// simulation only{R}")
+        while True:
+            w, _ = shutil.get_terminal_size()
+            t = datetime.now().strftime("%H:%M:%S")
+            r = random.random()
+            ph = random.choice(PHASES)
+            if r < 0.12:
+                print(f"{GD}[{t}]{R} {A}{ph:<6}{R} {random.choice(ICE):<20} {bar(w)} {GB}BYPASSED{R}")
+            elif r < 0.2:
+                print(f"{GD}[{t}]{R} {RD}{'ALERT':<6}{R} trace detected from {W}{ip()}{R} {A}re-routing{R}")
+            elif r < 0.3:
+                print(f"{GD}[{t}]{R} {W}{'ROOT':<6}{R} {random.choice(HOSTS):<18} {GB}ACCESS GRANTED{R}")
+            else:
+                port, svc = random.choice(SERVICES)
+                state = random.choice([f"{GB}OPEN{R}", f"{GD}filtered{R}", f"{G}listening{R}"])
+                print(f"{GD}[{t}]{R} {G}{ph:<6}{R} {ip():<15} :{port:<5} {svc:<12} {state}")
+            sys.stdout.flush()
+            time.sleep(random.uniform(0.15, 0.75))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write("\033[?25h\033[0m")
+
+main()
+__PAYLOAD_INTRUSION_PY__
+
+_payload netlink.sh <<'__PAYLOAD_NETLINK_SH__'
+#!/bin/bash
+# Real live network sockets, dressed up. Colors follow the same H4X0R_*
+# environment the python panes read; phosphor green when unset.
+esc() { # esc <hex> -> truecolor escape
+  local h=${1#\#}
+  printf '\033[38;2;%d;%d;%dm' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"
+}
+HEAD=$(esc "${H4X0R_HEAD:-ffffff}")
+BRIGHT=$(esc "${H4X0R_BRIGHT:-87ff87}")
+MAIN=$(esc "${H4X0R_MAIN:-00d75f}")
+MID=$(esc "${H4X0R_MID:-00af5f}")
+DEEP=$(esc "${H4X0R_DEEP:-005f00}")
+R=$'\033[0m'
+
+while true; do
+  printf '\033[H\033[2J%s  :: LIVE UPLINKS ::%s  %s%s%s\n\n' "$HEAD" "$R" "$DEEP" "$(date '+%F %T')" "$R"
+  ss -tunp 2>/dev/null | awk -v deep="$DEEP" -v main="$MAIN" -v mid="$MID" -v bright="$BRIGHT" -v r="$R" '
+    NR==1 {printf "%s%s%s\n", deep, $0, r; next}
+    {c=main; if ($1=="udp") c=mid; if ($0 ~ /ESTAB/) c=bright;
+     printf "%s%s%s\n", c, substr($0,1,200), r}' | head -n $(( $(tput lines) - 5 ))
+  sleep 2
+done
+__PAYLOAD_NETLINK_SH__
+
+
+if [ "$ACTION" = extract ]; then
+  note "pane scripts are in $HACKER_DIR"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# palette: the Omarchy theme, or one of the named CRT palettes
+# ---------------------------------------------------------------------------
+ENVP=""
+theme_env() {
+  [ -r "$THEME_DIR/colors.toml" ] || return 1
+  python3 - "$THEME_DIR/colors.toml" <<'PYEOF'
+import sys, re
+try:
+    import tomllib
+    with open(sys.argv[1], "rb") as fh: t = tomllib.load(fh)
+except Exception:
+    t = {}
+    for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+        m = re.match(r'\s*([a-z_]+)\s*=\s*"([^"]+)"', line)
+        if m: t[m.group(1)] = m.group(2)
+
+def pick(*names):
+    for n in names:
+        v = t.get(n)
+        if isinstance(v, str) and re.fullmatch(r"#?[0-9a-fA-F]{6}", v.strip()):
+            return v.strip().lstrip("#")
+    return None
+
+roles = {
+    "HEAD":   pick("bright_foreground", "light_foreground", "foreground"),
+    "BRIGHT": pick("light_foreground", "foreground", "accent"),
+    "MAIN":   pick("foreground", "accent"),
+    "MID":    pick("accent", "foreground"),
+    "DIM":    pick("dark_foreground", "muted"),
+    "DEEP":   pick("muted", "selection", "lighter_background"),
+    "ALERT":  pick("yellow", "orange", "bright_yellow"),
+    "WARN":   pick("bright_red", "red", "magenta"),
+}
+if not roles["MAIN"]:
+    sys.exit(1)
+print(" ".join("H4X0R_%s=%s" % (k, v) for k, v in roles.items() if v))
+PYEOF
+}
+
+# Named palettes, for when you would rather not match the desktop. Roles are
+# HEAD BRIGHT MAIN MID DIM DEEP ALERT WARN - brightest to nearly-background,
+# plus two accents for "something happened" and "something bad happened".
+palette_env() {
+  case "$1" in
+    phosphor|green)  echo "ffffff 87ff87 00d75f 00af5f 00875f 005f00 ffaf00 ff2a2a" ;;  # P1 CRT
+    amber)           echo "fff2d0 ffd479 ffb000 d98f00 a86b00 4a2f00 fff200 ff5c1a" ;;  # P3 CRT
+    ice)             echo "ffffff b3f6ff 4fd6ff 27a9d9 1b7ba6 0a3a4a ffd166 ff5c7a" ;;  # cold blue
+    crimson)         echo "ffd7de ff6b8a e01040 b00c33 7a0a24 3d0512 ffb000 ff2a2a" ;;  # red alert
+    synthwave)       echo "fdf6ff ff8ae2 f92aad c01d8a 7a1a63 2b0a3d 36f9f6 ff5555" ;;  # hot pink
+    mono)            echo "ffffff e0e0e0 b8b8b8 8a8a8a 5c5c5c 2e2e2e ffffff ff5555" ;;  # grey
+    *) return 1 ;;
+  esac
+}
+
+named_env() {
+  local vals roles i=0 out=""
+  vals=$(palette_env "$1") || return 1
+  roles="HEAD BRIGHT MAIN MID DIM DEEP ALERT WARN"
+  set -- $vals
+  for r in $roles; do
+    i=$((i + 1)); eval "v=\${$i}"
+    out="$out H4X0R_$r=$v"
+  done
+  printf '%s' "${out# }"
+}
+
+case "$THEME" in
+  omarchy|theme|auto)
+    if ENVP=$(theme_env) && [ -n "$ENVP" ]; then
+      ENVP="$ENVP "
+      note "recoloring from the current Omarchy theme"
+    else
+      ENVP=""
+      [ "$THEME" != auto ] && note "no readable theme palette - staying phosphor green"
+    fi ;;
+  *)
+    if ENVP=$(named_env "$THEME") && [ -n "$ENVP" ]; then
+      ENVP="$ENVP "
+      note "palette: $THEME"
+    else
+      ENVP=""
+    fi ;;
+esac
+
+# ---------------------------------------------------------------------------
+# audio slot
+# ---------------------------------------------------------------------------
+AUDIO_CMD="python3 $HACKER_DIR/matrix.py"
+AUDIO_LABEL="▓ RAIN 03 ▓"
+if [ "$MUSIC" != no ]; then
+  if [ "$MUSIC" = yes ] || ! pgrep -x cliamp >/dev/null 2>&1; then
+    if command -v cliamp >/dev/null; then
+      AUDIO_CMD="cliamp --visualizer Binary --auto-play"
+      AUDIO_LABEL="▓ AUDIO ▓"
+    else
+      note "cliamp not installed - using one more rain instead"
+    fi
+  else
+    note "cliamp is already playing elsewhere - using one more rain (--music overrides)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# build
+# ---------------------------------------------------------------------------
+existing=$(live)
+if [ -n "$existing" ]; then
+  if [ "$REBUILD" = 1 ]; then
+    note "rebuilding - closing the old one first"
+    close_all; sleep 1
+  else
+    note "already running ($existing) - focusing it (--rebuild to start over)"
+    if [ "$FOCUS" = 1 ]; then
+      if [ "$BACKEND" = herdr ]; then h_focus "$(printf '%s' "$existing" | awk '{print $1}')"; else t_focus; fi
+    fi
+    exit 0
+  fi
+fi
+
+if [ "$BACKEND" = herdr ]; then
+  ws_json=$(h_new) || die "herdr workspace create failed"
+  WS=$(printf '%s' "$ws_json" | jget result.workspace.workspace_id) || die "no workspace id"
+  TOP=$(printf '%s' "$ws_json" | jget result.root_pane.pane_id)     || die "no root pane"
+  split() { h_split "$@"; }; launch() { h_run "$@"; }
+else
+  TOP=$(t_new) || die "tmux session create failed"
+  WS="$TMUX_SESSION"
+  split() { t_split "$@"; }; launch() { t_run "$@"; }
+fi
+[ -n "$TOP" ] || die "no root pane returned"
+
+# How wide is the window? Layout choice and btop both depend on it.
+if [ "$BACKEND" = herdr ]; then
+  COLS=$(herdr pane layout --pane "$TOP" 2>/dev/null \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["layout"]["area"]["width"])' 2>/dev/null)
+else
+  COLS=$(tmux display -pt "$TOP" '#{window_width}' 2>/dev/null)
+fi
+case "${COLS:-}" in ''|*[!0-9]*) COLS=200 ;; esac
+
+if [ "$LAYOUT" = auto ]; then
+  if   [ "$COLS" -ge 220 ]; then LAYOUT=grid
+  elif [ "$COLS" -ge 130 ]; then LAYOUT=cinema
+  else                           LAYOUT=minimal
+  fi
+  note "auto layout: $LAYOUT (window is $COLS columns)"
+fi
+
+# btop draws an error box below about 80 columns, so hand narrow panes to top
+case "$LAYOUT" in
+  grid)    MON_COLS=$((COLS * 28 / 100)) ;;
+  cinema)  MON_COLS=$((COLS * 45 / 100)) ;;
+  minimal) MON_COLS=$((COLS * 65 / 100)) ;;
+esac
+MON="btop"
+if ! command -v btop >/dev/null; then
+  MON="top -d 1"
+elif [ "$MON_COLS" -lt 80 ]; then
+  MON="top -d 1"
+  note "monitor pane is only $MON_COLS columns - using top rather than btop"
+fi
+
+TITLE_MAP=()
+BOOT="$HACKER_DIR/boot.py"
+
+# Wrap each command in boot.py so the pane types a bring-up line first, and
+# stagger the launches - the grid fills in one pane at a time.
+launch_pane() { # pane label cmd
+  local pane="$1" label="$2" cmd="$3"
+  [ -n "$pane" ] || die "a split failed - layout incomplete"
+  TITLE_MAP+=("$pane"$'\t'"$label")
+  if [ "$INSTANT" = 0 ]; then
+    cmd="python3 $(printf '%q' "$BOOT") $(printf '%q' "$label") $(printf '%q' "$cmd")"
+  fi
+  launch "$pane" "$label" "$ENVP$cmd"
+  [ "$INSTANT" = 0 ] && sleep 0.28
+  return 0
+}
+
+M="python3 $HACKER_DIR/matrix.py"
+PROC="watch -c -n 1 -t 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head -n 10'"
+
+# ratios say what the ORIGINAL pane keeps, so 0.28 leaves 28% and splits off 72%
+build_grid() {
+  local BOT CLI A B C D A2 C2 C3 C2b D2 D3
+  BOT=$(split "$TOP" down  0.72 )   # full-width strip along the bottom
+  CLI=$(split "$BOT" right 0.38 )   # uplinks 38% | audio 62%
+  A=$TOP
+  B=$(split "$A"   right 0.28 )     # A keeps 28%; B..D share the rest
+  C=$(split "$B"   right 0.179)     # B is the narrow full-height rain stripe
+  D=$(split "$C"   right 0.59 )
+  A2=$(split "$A"  down  0.62 )     # btop over a rain
+  C2=$(split "$C"  down  0.283)     # banner over ...
+  C3=$(split "$C2" down  0.578)     # ... a nested row over the memdump
+  C2b=$(split "$C2" right 0.585)    # that nested row splits sideways - the seam
+  D2=$(split "$D"  down  0.226)     # three unequal rows down the right edge
+  D3=$(split "$D2" down  0.537)
+
+  launch_pane "$A"   "▓ THE GIBSON ▓"  "$MON"
+  launch_pane "$B"   "▓ RAIN 01 ▓"     "$M"
+  launch_pane "$C"   "▓ STATUS ▓"      "python3 $HACKER_DIR/banner.py"
+  launch_pane "$C2"  "▓ INTRUSION ▓"   "python3 $HACKER_DIR/intrusion.py"
+  launch_pane "$C2b" "▓ SWEEP ▓"       "python3 $HACKER_DIR/radar.py"
+  launch_pane "$C3"  "▓ MEMDUMP ▓"     "python3 $HACKER_DIR/hexfeed.py"
+  launch_pane "$D"   "▓ PROC ▓"        "$PROC"
+  launch_pane "$D2"  "▓ SYSLOG ▓"      "journalctl -f -n 40 --no-hostname"
+  launch_pane "$D3"  "▓ KERNEL RING ▓" "journalctl -kf -n 30 --no-hostname"
+  launch_pane "$A2"  "▓ RAIN 02 ▓"     "$M"
+  launch_pane "$BOT" "▓ UPLINKS ▓"     "bash $HACKER_DIR/netlink.sh"
+  launch_pane "$CLI" "$AUDIO_LABEL"    "$AUDIO_CMD"
+}
+
+# Five big panes - readable across a room, good on a second monitor.
+build_cinema() {
+  local BOT CLI R R2
+  BOT=$(split "$TOP" down  0.70 )
+  CLI=$(split "$BOT" right 0.42 )
+  R=$(split "$TOP"  right 0.55 )
+  R2=$(split "$R"   down  0.50 )
+
+  launch_pane "$TOP" "▓ RAIN 01 ▓"    "$M"
+  launch_pane "$R"   "▓ THE GIBSON ▓" "$MON"
+  launch_pane "$R2"  "▓ INTRUSION ▓"  "python3 $HACKER_DIR/intrusion.py"
+  launch_pane "$BOT" "▓ UPLINKS ▓"    "bash $HACKER_DIR/netlink.sh"
+  launch_pane "$CLI" "$AUDIO_LABEL"   "$AUDIO_CMD"
+}
+
+# Three panes - the look without giving up the whole machine.
+build_minimal() {
+  local R R2
+  R=$(split "$TOP" right 0.35 )
+  R2=$(split "$R"  down  0.60 )
+
+  launch_pane "$TOP" "▓ RAIN 01 ▓"    "$M"
+  launch_pane "$R"   "▓ THE GIBSON ▓" "$MON"
+  launch_pane "$R2"  "▓ SYSLOG ▓"     "journalctl -f -n 40 --no-hostname"
+}
+
+case "$LAYOUT" in
+  grid)    build_grid ;;
+  cinema)  build_cinema ;;
+  minimal) build_minimal ;;
+esac
+
+# tmux pane titles must be re-applied once the programs own the ptys: the
+# shell prompt's title escape overwrites anything set before the command runs
+if [ "$BACKEND" = tmux ]; then
+  sleep 2
+  for entry in "${TITLE_MAP[@]}"; do
+    tmux select-pane -t "${entry%%$'\t'*}" -T "${entry#*$'\t'}" >/dev/null 2>&1
+  done
+  tmux select-pane -t "$TOP" >/dev/null 2>&1
+fi
+
+if [ "$FOCUS" = 1 ]; then
+  if [ "$BACKEND" = herdr ]; then h_focus "$WS"; else t_focus; fi
+fi
+note "$BACKEND: $WS is up - $LAYOUT, ${#TITLE_MAP[@]} panes. close it with: h4x0r --close"

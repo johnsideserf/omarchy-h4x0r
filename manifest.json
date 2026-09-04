@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.johnsideserf.h4x0r",
+  "name": "h4x0r",
+  "version": "1.0.0",
+  "author": "johnsideserf",
+  "license": "MIT",
+  "description": "Bar button and phosphor-green popout that spins up a 12-pane 90s hacker-movie workspace in herdr or tmux.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "h4x0r",
+    "description": "Engage or tear down the hacker-movie workspace, pick the multiplexer, toggle the music.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "multiplexer": "auto",
+      "music": true,
+      "pollSeconds": 6,
+      "layout": "auto",
+      "palette": "theme"
+    },
+    "schema": [
+      {
+        "key": "multiplexer",
+        "type": "enum",
+        "label": "Multiplexer",
+        "options": [
+          "auto",
+          "herdr",
+          "tmux"
+        ],
+        "defaultValue": "auto",
+        "description": "Which terminal multiplexer to build the workspace in. auto prefers herdr when its server is reachable, then tmux."
+      },
+      {
+        "key": "layout",
+        "type": "enum",
+        "label": "Layout",
+        "options": [
+          "auto",
+          "grid",
+          "cinema",
+          "minimal"
+        ],
+        "defaultValue": "auto",
+        "description": "auto picks a layout that fits the window; grid is the full 12-pane arrangement, cinema is 5 large panes, minimal is 3."
+      },
+      {
+        "key": "palette",
+        "type": "enum",
+        "label": "Palette",
+        "options": [
+          "theme",
+          "phosphor",
+          "amber",
+          "ice",
+          "crimson",
+          "synthwave",
+          "mono"
+        ],
+        "defaultValue": "theme",
+        "description": "theme follows your current Omarchy colors everywhere, including the pane programs. The rest are fixed CRT palettes: phosphor green, amber, ice blue, crimson, synthwave, and mono."
+      },
+      {
+        "key": "music",
+        "type": "boolean",
+        "label": "Start cliamp",
+        "defaultValue": true,
+        "description": "Give the bottom strip a cliamp visualiser. Skipped automatically when cliamp is already playing elsewhere."
+      },
+      {
+        "key": "pollSeconds",
+        "type": "integer",
+        "label": "Status poll (seconds)",
+        "min": 2,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 6
+      }
+    ]
+  },
+  "icon": "icon.png"
+}
