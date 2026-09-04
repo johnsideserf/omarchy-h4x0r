@@ -809,6 +809,10 @@ named_env() {
   printf '%s' "${out# }"
 }
 
+# H4X0R_EXTRA_ENV rides along on every pane command; scripts/shot.py uses it to
+# point btop at a generated theme so previews come out in one palette.
+EXTRA_ENV="${H4X0R_EXTRA_ENV:-}"
+
 case "$THEME" in
   omarchy|theme|auto)
     if ENVP=$(theme_env) && [ -n "$ENVP" ]; then
@@ -917,7 +921,7 @@ launch_pane() { # pane label cmd
   if [ "$INSTANT" = 0 ]; then
     cmd="python3 $(printf '%q' "$BOOT") $(printf '%q' "$label") $(printf '%q' "$cmd")"
   fi
-  launch "$pane" "$label" "$ENVP$cmd"
+  launch "$pane" "$label" "${EXTRA_ENV:+$EXTRA_ENV }$ENVP$cmd"
   [ "$INSTANT" = 0 ] && sleep 0.28
   return 0
 }

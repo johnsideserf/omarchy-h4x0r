@@ -10,6 +10,8 @@ asymmetrically so it reads as a break-in rather than a spreadsheet.
 
 </div>
 
+![the grid layout](preview.png)
+
 ---
 
 ## What it does
@@ -139,6 +141,27 @@ in any terminal.
 **cinema** from 130, **minimal** below that. `btop` draws an error box under
 about 80 columns, so a monitor pane narrower than that gets `top` instead.
 Force any layout with `--layout` and it is honoured regardless.
+
+## Screenshots
+
+`scripts/shot.py` renders a preview without opening a window: it builds the
+layout in a detached tmux session at an exact character size, reads the panes
+back as ANSI text, and draws the image itself.
+
+```bash
+scripts/shot.py --layout grid --palette phosphor --out preview.png
+scripts/shot.py --layout cinema --width 1600 --out docs/cinema.png
+```
+
+It generates a matching btop theme on the fly so the monitor pane is in the
+same palette as everything else, and masks IPv4 addresses and your username by
+default (`--no-redact` turns that off). Nothing on your desktop can end up in
+the frame.
+
+| | |
+|---|---|
+| ![cinema](docs/cinema.png) | ![amber](docs/amber.png) |
+| `--layout cinema` | `--palette amber` |
 
 ## Notes
 
