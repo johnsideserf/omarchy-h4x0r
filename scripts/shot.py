@@ -186,9 +186,43 @@ theme[process_end]="#{HEAD}"
 ROLES = ["HEAD", "BRIGHT", "MAIN", "MID", "DIM", "DEEP", "ALERT", "WARN"]
 
 
+THEME_COLORS = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+
+
+def theme_palette():
+    """The eight h4x0r roles read out of the active Omarchy theme."""
+    try:
+        text = open(THEME_COLORS, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+    vals = dict(re.findall(r'^\s*([a-z_]+)\s*=\s*"(#?[0-9a-fA-F]{6})"', text, re.M))
+
+    def pick(*names):
+        for n in names:
+            if n in vals:
+                return vals[n].lstrip("#")
+        return None
+
+    roles = [pick("bright_foreground", "light_foreground", "foreground"),
+             pick("light_foreground", "foreground", "accent"),
+             pick("foreground", "accent"),
+             pick("accent", "foreground"),
+             pick("dark_foreground", "muted"),
+             pick("muted", "selection", "lighter_background"),
+             pick("yellow", "orange", "bright_yellow"),
+             pick("bright_red", "red", "magenta")]
+    return " ".join(roles) if all(roles) else None
+
+
+def resolve_palette(name):
+    if name in ("theme", "auto", "omarchy"):
+        return theme_palette()
+    return PALETTES.get(name)
+
+
 def btop_config(palette, tmp):
     """A throwaway XDG config so btop draws in the same palette as everything else."""
-    hexes = PALETTES.get(palette)
+    hexes = resolve_palette(palette)
     if not hexes:
         return None
     colors = dict(zip(ROLES, hexes.split()))
@@ -311,7 +345,7 @@ def render(grid, cols, rows, size, out, width):
 
 
 def border_colors(palette):
-    hexes = PALETTES.get(palette)
+    hexes = resolve_palette(palette)
     if not hexes:
         return (0, 70, 40), (0, 190, 110)
     c = dict(zip(ROLES, hexes.split()))

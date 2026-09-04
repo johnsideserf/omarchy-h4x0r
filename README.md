@@ -10,7 +10,10 @@ asymmetrically so it reads as a break-in rather than a spreadsheet.
 
 </div>
 
-![the grid layout](preview.png)
+![the grid layout, matched to the current Omarchy theme](preview.png)
+
+<sub>The grid layout, in the colours of the desktop it is running on — that is
+the default. Six fixed CRT palettes are a click away.</sub>
 
 ---
 
@@ -149,9 +152,12 @@ layout in a detached tmux session at an exact character size, reads the panes
 back as ANSI text, and draws the image itself.
 
 ```bash
-scripts/shot.py --layout grid --palette phosphor --out preview.png
-scripts/shot.py --layout cinema --width 1600 --out docs/cinema.png
+scripts/shot.py --layout grid --palette theme --out preview.png
+scripts/shot.py --layout cinema --palette phosphor --out docs/cinema.png
 ```
+
+`--palette theme` reads the active Omarchy theme, the same as the plugin does,
+so a screenshot shows what the machine it ran on actually looks like.
 
 It generates a matching btop theme on the fly so the monitor pane is in the
 same palette as everything else, and masks IPv4 addresses and your username by
@@ -160,8 +166,10 @@ the frame.
 
 | | |
 |---|---|
-| ![cinema](docs/cinema.png) | ![amber](docs/amber.png) |
-| `--layout cinema` | `--palette amber` |
+| ![phosphor](docs/phosphor.png) | ![amber](docs/amber.png) |
+| `--palette phosphor` | `--palette amber` |
+| ![cinema](docs/cinema.png) | |
+| `--layout cinema` | |
 
 ## Notes
 
