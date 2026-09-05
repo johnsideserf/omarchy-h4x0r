@@ -59,6 +59,16 @@ fi
 
 BINDINGS="$HOME/.config/hypr/bindings.lua"
 if [ "$keybind" = 1 ] && [ -f "$BINDINGS" ] && ! grep -q 'h4x0r' "$BINDINGS"; then
+  # never shadow a shortcut the user already has
+  taken=$(omarchy menu keybindings --print 2>/dev/null | grep -iE '^SUPER SHIFT \+ H\b' || true)
+  if [ -n "$taken" ]; then
+    echo "==> SUPER + SHIFT + H is already bound to:${taken#*→}"
+    echo "    skipping the keybind; bind h4x0r to something else in $BINDINGS"
+    keybind=0
+  fi
+fi
+
+if [ "$keybind" = 1 ] && [ -f "$BINDINGS" ] && ! grep -q 'h4x0r' "$BINDINGS"; then
   {
     echo
     echo "-- h4x0r: 90s hacker-movie workspace"
