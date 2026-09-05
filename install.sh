@@ -34,6 +34,8 @@ echo "==> linked ~/.local/bin/h4x0r"
 
 MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 if [ "$menu" = 1 ] && [ -f "$MENU" ] && ! grep -q '"trigger.h4x0r"' "$MENU"; then
+  cp "$MENU" "$MENU.bak.$(date -u +%Y%m%d%H%M%S)"
+  echo "==> backed up $(basename "$MENU")"
   python3 - "$MENU" "$HOME/.local/bin/h4x0r" <<'PYEOF'
 import sys, pathlib
 menu, cli = pathlib.Path(sys.argv[1]), sys.argv[2]
