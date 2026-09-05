@@ -3,15 +3,15 @@
 #
 # Matrix rain, a radar sweep, a fake intrusion log, a memory dump, live syslog
 # and sockets, btop, and a music visualiser - laid out asymmetrically so it
-# reads as a break-in rather than a spreadsheet. Works with herdr or tmux; one
-# layout spec drives both.
+# reads as a break-in rather than a spreadsheet. Works with herdr, tmux or
+# zellij.
 #
 #   h4x0r                    build it and jump to it
 #   h4x0r --layout cinema    auto (default), grid (12 panes), cinema (5),
 #                            minimal (3). auto picks one to fit the window.
 #   h4x0r --palette amber    theme (default), phosphor, amber, ice, crimson,
 #                            synthwave, or mono
-#   h4x0r --mux tmux         force a backend (herdr, tmux, or auto)
+#   h4x0r --mux tmux         force a backend (herdr, tmux, zellij, or auto)
 #   h4x0r --instant          skip the staged reveal
 #   h4x0r -l "THE GIBSON"    name it something else (herdr workspace label)
 #   h4x0r --no-focus         build it in the background
@@ -31,6 +31,7 @@ set -uo pipefail
 
 HACKER_DIR="${HACKER_DIR:-$HOME/.local/share/hacker-panes}"
 TMUX_SESSION="${H4X0R_TMUX_SESSION:-h4x0r}"
+ZELLIJ_SESSION="${H4X0R_ZELLIJ_SESSION:-h4x0r}"
 THEME_DIR="${H4X0R_THEME_DIR:-$HOME/.local/state/omarchy/current/theme}"
 LABEL="☠ THE GIBSON ☠"
 MUX="${H4X0R_MUX:-auto}"
@@ -81,7 +82,7 @@ QUIET=0
 [ "$ACTION" = palette ] && QUIET=1
 [ "$JSON" = 1 ] && QUIET=1
 
-case "$MUX"    in auto|herdr|tmux) ;;      *) die "unknown multiplexer '$MUX' (herdr, tmux, or auto)" ;; esac
+case "$MUX" in auto|herdr|tmux|zellij) ;; *) die "unknown multiplexer '$MUX' (herdr, tmux, zellij, or auto)" ;; esac
 case "$LAYOUT" in auto|grid|cinema|minimal) ;; *) die "unknown layout '$LAYOUT' (auto, grid, cinema, or minimal)" ;; esac
 case "$THEME" in
   auto|theme|omarchy|phosphor|green|amber|ice|crimson|synthwave|mono) ;;
@@ -92,17 +93,20 @@ command -v python3 >/dev/null || die "python3 is required"
 # ---------------------------------------------------------------------------
 # backends
 # ---------------------------------------------------------------------------
-herdr_ok() { command -v herdr >/dev/null && herdr workspace list >/dev/null 2>&1; }
-tmux_ok()  { command -v tmux  >/dev/null; }
+herdr_ok()  { command -v herdr  >/dev/null && herdr workspace list >/dev/null 2>&1; }
+tmux_ok()   { command -v tmux   >/dev/null; }
+zellij_ok() { command -v zellij >/dev/null; }
 
 resolve_mux() {
   case "$MUX" in
     herdr) herdr_ok || die "herdr is not installed or no server is reachable"; echo herdr ;;
-    tmux)  tmux_ok  || die "tmux is not installed"; echo tmux ;;
+    tmux)   tmux_ok   || die "tmux is not installed"; echo tmux ;;
+    zellij) zellij_ok || die "zellij is not installed"; echo zellij ;;
     auto)
       if herdr_ok; then echo herdr
       elif tmux_ok; then echo tmux
-      else die "no supported multiplexer found (herdr or tmux)"; fi ;;
+      elif zellij_ok; then echo zellij
+      else die "no supported multiplexer found (herdr, tmux, or zellij)"; fi ;;
   esac
 }
 
@@ -166,25 +170,136 @@ t_close() {
   t_is_ours || { note "tmux session '$TMUX_SESSION' was not created by h4x0r - leaving it alone" >&2; return 1; }
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null && note "closed tmux session $TMUX_SESSION"
 }
-t_focus() {
-  if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$TMUX_SESSION" >/dev/null 2>&1; return; fi
-  local term=""
+# Open a terminal window running the given command. Returns 1 when there is no
+# terminal to use, so callers can print an attach hint instead.
+open_terminal() {
+  local term="" c
   for c in omarchy-launch-terminal "${TERMINAL:-}" foot ghostty alacritty kitty; do
     [ -n "$c" ] && command -v "$c" >/dev/null && { term="$c"; break; }
   done
-  [ -n "$term" ] || { note "attach with: tmux attach -t $TMUX_SESSION"; return; }
+  [ -n "$term" ] || return 1
   if [ "$term" = omarchy-launch-terminal ]; then
-    setsid omarchy-launch-terminal tmux attach -t "$TMUX_SESSION" >/dev/null 2>&1 &
+    setsid omarchy-launch-terminal "$@" >/dev/null 2>&1 &
   else
-    setsid "$term" -e tmux attach -t "$TMUX_SESSION" >/dev/null 2>&1 &
+    setsid "$term" -e "$@" >/dev/null 2>&1 &
   fi
+  return 0
+}
+
+t_focus() {
+  if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$TMUX_SESSION" >/dev/null 2>&1; return; fi
+  open_terminal tmux attach -t "$TMUX_SESSION" ||
+    note "attach with: tmux attach -t $TMUX_SESSION"
+}
+
+# --- zellij ----------------------------------------------------------------
+# zellij is client-first: panes in a detached session do not materialise, and
+# there is no incremental split that takes a ratio. So the whole arrangement is
+# described up front as a KDL layout and the session is started attached, in a
+# terminal, which is how zellij is meant to be driven.
+z_sessions() { zellij list-sessions -sn 2>/dev/null; }
+z_exists()   { z_sessions | grep -qx "$ZELLIJ_SESSION"; }
+# no session-scoped options to mark, so ownership is proven by our pane names
+z_is_ours()  { zellij --session "$ZELLIJ_SESSION" action dump-layout 2>/dev/null | grep -q 'THE GIBSON'; }
+z_live()     { z_exists && z_is_ours && echo "$ZELLIJ_SESSION"; }
+# dump-layout repeats the arrangement in new_tab_template and the swap layouts,
+# so count only the live tab
+z_panes() {
+  zellij --session "$ZELLIJ_SESSION" action dump-layout 2>/dev/null \
+    | sed -n '/^    tab /,/^    new_tab_template/p' | grep -c 'name="▓'
+}
+z_close() {
+  z_exists || { note "nothing to close"; return 1; }
+  z_is_ours || { note "zellij session '$ZELLIJ_SESSION' was not created by h4x0r - leaving it alone" >&2; return 1; }
+  zellij kill-session "$ZELLIJ_SESSION" >/dev/null 2>&1
+  zellij delete-session "$ZELLIJ_SESSION" --force >/dev/null 2>&1
+  note "closed zellij session $ZELLIJ_SESSION"
+}
+z_focus() {
+  if [ -n "${ZELLIJ:-}" ]; then note "already inside zellij - switch with the session manager"; return; fi
+  open_terminal zellij attach "$ZELLIJ_SESSION" ||
+    note "attach with: zellij attach $ZELLIJ_SESSION"
+}
+
+kesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# One pane: size (may be empty), title, command. Env assignments and the boot
+# wrapper go in as separate KDL args, so nothing needs shell quoting.
+kpane() {
+  local size="$1" name="$2" cmd="$3" args="" a
+  for a in $ENVP; do args="$args \"$(kesc "$a")\""; done
+  if [ "$INSTANT" = 0 ]; then
+    args="$args \"python3\" \"$(kesc "$BOOT")\" \"$(kesc "$name")\" \"$(kesc "$cmd")\""
+  else
+    args="$args \"bash\" \"-c\" \"$(kesc "$cmd")\""
+  fi
+  printf '            pane %sname="%s" command="env" {\n                args%s\n            }\n' \
+    "${size:+size=\"$size\" }" "$(kesc "$name")" "$args"
+}
+
+# vertical splits into columns, horizontal into rows - the same proportions the
+# other two backends reach by splitting
+z_layout_kdl() {
+  printf 'layout {\n'
+  case "$LAYOUT" in
+    grid)
+      printf '        pane split_direction="horizontal" {\n'
+      printf '          pane size="72%%" split_direction="vertical" {\n'
+      printf '            pane size="28%%" split_direction="horizontal" {\n'
+      kpane "62%" "▓ THE GIBSON ▓" "$MON"
+      kpane ""    "▓ RAIN 02 ▓"    "$M"
+      printf '            }\n'
+      kpane "13%" "▓ RAIN 01 ▓" "$M"
+      printf '            pane size="35%%" split_direction="horizontal" {\n'
+      kpane "28%" "▓ STATUS ▓" "python3 $HACKER_DIR/banner.py"
+      printf '              pane size="72%%" split_direction="horizontal" {\n'
+      printf '                pane size="58%%" split_direction="vertical" {\n'
+      kpane "58%" "▓ INTRUSION ▓" "python3 $HACKER_DIR/intrusion.py"
+      kpane ""    "▓ SWEEP ▓"     "python3 $HACKER_DIR/radar.py"
+      printf '                }\n'
+      kpane "" "▓ MEMDUMP ▓" "python3 $HACKER_DIR/hexfeed.py"
+      printf '              }\n            }\n'
+      printf '            pane size="24%%" split_direction="horizontal" {\n'
+      kpane "23%" "▓ PROC ▓"        "$PROC"
+      kpane "41%" "▓ SYSLOG ▓"      "journalctl -f -n 40 --no-hostname"
+      kpane ""    "▓ KERNEL RING ▓" "journalctl -kf -n 30 --no-hostname"
+      printf '            }\n          }\n'
+      printf '          pane size="28%%" split_direction="vertical" {\n'
+      kpane "38%" "▓ UPLINKS ▓" "bash $HACKER_DIR/netlink.sh"
+      kpane ""    "$AUDIO_LABEL" "$AUDIO_CMD"
+      printf '          }\n        }\n'
+      ;;
+    cinema)
+      printf '        pane split_direction="horizontal" {\n'
+      printf '          pane size="70%%" split_direction="vertical" {\n'
+      kpane "55%" "▓ RAIN 01 ▓" "$M"
+      printf '            pane size="45%%" split_direction="horizontal" {\n'
+      kpane "50%" "▓ THE GIBSON ▓" "$MON"
+      kpane ""    "▓ INTRUSION ▓"  "python3 $HACKER_DIR/intrusion.py"
+      printf '            }\n          }\n'
+      printf '          pane size="30%%" split_direction="vertical" {\n'
+      kpane "42%" "▓ UPLINKS ▓" "bash $HACKER_DIR/netlink.sh"
+      kpane ""    "$AUDIO_LABEL" "$AUDIO_CMD"
+      printf '          }\n        }\n'
+      ;;
+    minimal)
+      printf '        pane split_direction="vertical" {\n'
+      kpane "35%" "▓ RAIN 01 ▓" "$M"
+      printf '          pane size="65%%" split_direction="horizontal" {\n'
+      kpane "60%" "▓ THE GIBSON ▓" "$MON"
+      kpane ""    "▓ SYSLOG ▓"     "journalctl -f -n 40 --no-hostname"
+      printf '          }\n        }\n'
+      ;;
+  esac
+  printf '}\n'
 }
 
 # --- dispatch --------------------------------------------------------------
 BACKEND=$(resolve_mux) || exit 1
 case "$BACKEND" in
   herdr) live() { h_live; }; panes() { h_panes "$@"; }; close_all() { h_close; } ;;
-  tmux)  live() { t_live; }; panes() { t_panes "$@"; }; close_all() { t_close; } ;;
+  tmux)   live() { t_live; }; panes() { t_panes "$@"; }; close_all() { t_close; } ;;
+  zellij) live() { z_live; }; panes() { z_panes "$@"; }; close_all() { z_close; } ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -199,9 +314,11 @@ if [ "$ACTION" = status ] || [ "$ACTION" = list ]; then
 print(json.dumps({"backend":sys.argv[1],"running":bool(sys.argv[2]),"id":sys.argv[2],
                   "panes":int(sys.argv[3]),"label":sys.argv[4],
                   "herdr":sys.argv[5]=="1","tmux":sys.argv[6]=="1",
-                  "layout":sys.argv[7],"theme":sys.argv[8]}))' \
+                  "layout":sys.argv[7],"theme":sys.argv[8],
+                  "zellij":sys.argv[9]=="1"}))' \
       "$BACKEND" "$first" "$n" "$LABEL" \
-      "$(herdr_ok && echo 1 || echo 0)" "$(tmux_ok && echo 1 || echo 0)" "$LAYOUT" "$THEME"
+      "$(herdr_ok && echo 1 || echo 0)" "$(tmux_ok && echo 1 || echo 0)" "$LAYOUT" "$THEME" \
+      "$(zellij_ok && echo 1 || echo 0)"
   elif [ -n "$first" ]; then
     note "$BACKEND: $first is up ($n panes)"
   else
@@ -872,6 +989,38 @@ fi
 # ---------------------------------------------------------------------------
 # build
 # ---------------------------------------------------------------------------
+# How wide is the window? Layout choice and btop both depend on it.
+pick_sizing() { # $1 = columns available
+  COLS="$1"
+  case "${COLS:-}" in ''|*[!0-9]*) COLS=200 ;; esac
+
+  if [ "$LAYOUT" = auto ]; then
+    if   [ "$COLS" -ge 220 ]; then LAYOUT=grid
+    elif [ "$COLS" -ge 130 ]; then LAYOUT=cinema
+    else                           LAYOUT=minimal
+    fi
+    note "auto layout: $LAYOUT (window is $COLS columns)"
+  fi
+
+  # btop draws an error box below about 80 columns, so hand narrow panes to top
+  case "$LAYOUT" in
+    grid)    MON_COLS=$((COLS * 28 / 100)) ;;
+    cinema)  MON_COLS=$((COLS * 45 / 100)) ;;
+    minimal) MON_COLS=$((COLS * 65 / 100)) ;;
+  esac
+  MON="btop"
+  if ! command -v btop >/dev/null; then
+    MON="top -d 1"
+  elif [ "$MON_COLS" -lt 80 ]; then
+    MON="top -d 1"
+    note "monitor pane is only $MON_COLS columns - using top rather than btop"
+  fi
+}
+
+M="python3 $HACKER_DIR/matrix.py"
+PROC="watch -c -n 1 -t 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head -n 10'"
+BOOT="$HACKER_DIR/boot.py"
+
 existing=$(live)
 if [ -n "$existing" ]; then
   if [ "$REBUILD" = 1 ]; then
@@ -884,6 +1033,29 @@ if [ -n "$existing" ]; then
     fi
     exit 0
   fi
+fi
+
+if [ "$BACKEND" = zellij ]; then
+  # no session yet to measure, so go on this terminal or a sane default
+  cols=200; [ -t 1 ] && cols=$(tput cols 2>/dev/null || echo 200)
+  asked_for_auto=0; [ "$LAYOUT" = auto ] && asked_for_auto=1
+  pick_sizing "$cols"
+  # zellij fixes pane sizes when the session is built, and the window does not
+  # exist yet to be measured. Twelve panes in a window that turns out small hit
+  # zellij's minimum pane size and flatten to equal splits, so unless the grid
+  # was asked for by name, take the layout that survives more window sizes.
+  if [ "$asked_for_auto" = 1 ] && [ "$LAYOUT" = grid ]; then
+    LAYOUT=cinema
+    note "zellij cannot be measured before it opens - using cinema (--layout grid to insist)"
+  fi
+  [ "$FOCUS" = 1 ] || note "zellij has to build attached, so --no-focus does not apply here"
+  kdl="$HACKER_DIR/layout-$LAYOUT.kdl"
+  z_layout_kdl > "$kdl" || die "could not write $kdl"
+  open_terminal zellij -s "$ZELLIJ_SESSION" -n "$kdl" ||
+    die "no terminal found to run zellij in - start it yourself with:
+       zellij -s $ZELLIJ_SESSION -n $kdl"
+  note "zellij: $ZELLIJ_SESSION is up - $LAYOUT. close it with: h4x0r --close"
+  exit 0
 fi
 
 if [ "$BACKEND" = herdr ]; then
@@ -902,39 +1074,14 @@ else
 fi
 [ -n "$TOP" ] || die "no root pane returned"
 
-# How wide is the window? Layout choice and btop both depend on it.
 if [ "$BACKEND" = herdr ]; then
-  COLS=$(herdr pane layout --pane "$TOP" 2>/dev/null \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["layout"]["area"]["width"])' 2>/dev/null)
+  pick_sizing "$(herdr pane layout --pane "$TOP" 2>/dev/null \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["layout"]["area"]["width"])' 2>/dev/null)"
 else
-  COLS=$(tmux display -pt "$TOP" '#{window_width}' 2>/dev/null)
-fi
-case "${COLS:-}" in ''|*[!0-9]*) COLS=200 ;; esac
-
-if [ "$LAYOUT" = auto ]; then
-  if   [ "$COLS" -ge 220 ]; then LAYOUT=grid
-  elif [ "$COLS" -ge 130 ]; then LAYOUT=cinema
-  else                           LAYOUT=minimal
-  fi
-  note "auto layout: $LAYOUT (window is $COLS columns)"
-fi
-
-# btop draws an error box below about 80 columns, so hand narrow panes to top
-case "$LAYOUT" in
-  grid)    MON_COLS=$((COLS * 28 / 100)) ;;
-  cinema)  MON_COLS=$((COLS * 45 / 100)) ;;
-  minimal) MON_COLS=$((COLS * 65 / 100)) ;;
-esac
-MON="btop"
-if ! command -v btop >/dev/null; then
-  MON="top -d 1"
-elif [ "$MON_COLS" -lt 80 ]; then
-  MON="top -d 1"
-  note "monitor pane is only $MON_COLS columns - using top rather than btop"
+  pick_sizing "$(tmux display -pt "$TOP" '#{window_width}' 2>/dev/null)"
 fi
 
 TITLE_MAP=()
-BOOT="$HACKER_DIR/boot.py"
 
 # Wrap each command in boot.py so the pane types a bring-up line first, and
 # stagger the launches - the grid fills in one pane at a time.
@@ -949,9 +1096,6 @@ launch_pane() { # pane label cmd
   [ "$INSTANT" = 0 ] && sleep 0.28
   return 0
 }
-
-M="python3 $HACKER_DIR/matrix.py"
-PROC="watch -c -n 1 -t 'ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head -n 10'"
 
 # ratios say what the ORIGINAL pane keeps, so 0.28 leaves 28% and splits off 72%
 build_grid() {

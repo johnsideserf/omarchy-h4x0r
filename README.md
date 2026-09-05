@@ -87,7 +87,7 @@ asked for it.
 
 - `python3` (3.8+) — the pane programs
 - `bash`
-- **herdr** or **tmux** — somewhere to put the panes
+- **herdr**, **tmux** or **zellij** — somewhere to put the panes
 
 **Optional**
 
@@ -106,7 +106,7 @@ Click the skull. Or:
 h4x0r                     # build it and jump to it
 h4x0r --layout cinema     # auto (default), grid (12), cinema (5), minimal (3)
 h4x0r --palette amber     # theme, phosphor, amber, ice, crimson, synthwave, mono
-h4x0r --mux tmux          # herdr, tmux, or auto
+h4x0r --mux zellij        # herdr, tmux, zellij, or auto
 h4x0r --instant           # skip the staged reveal
 h4x0r --status --json     # what is running, and where
 h4x0r --close             # tear it down
@@ -120,7 +120,7 @@ engage without opening the popout; middle-click to disengage.
 
 | Key | Default | What it does |
 |-----|---------|--------------|
-| `multiplexer` | `auto` | `auto` prefers herdr when its server is reachable, then tmux |
+| `multiplexer` | `auto` | `auto` prefers herdr when its server is reachable, then tmux, then zellij |
 | `layout` | `auto` | `auto` fits the layout to the window; or `grid` (12 panes), `cinema` (5), `minimal` (3) |
 | `palette` | `theme` | `theme` follows your Omarchy colors; or `phosphor`, `amber`, `ice`, `crimson`, `synthwave`, `mono` |
 | `music` | `true` | Give the bottom strip a cliamp visualiser |
@@ -139,6 +139,27 @@ after that, so edit them freely. `h4x0r --refresh` restores the originals and
 
 Each one is a standalone script — run `python3 ~/.local/share/hacker-panes/radar.py`
 in any terminal.
+
+## Multiplexers
+
+herdr and tmux are driven the same way: one spec of binary splits, with the
+ratios converted per backend. herdr ratios say what the *original* pane keeps;
+tmux's `-l` sizes the *new* one, so the tmux path converts with `100 - r x 100`.
+
+zellij works differently enough to be worth knowing. It has no split that takes
+a ratio, and panes in a detached session never start, so the arrangement is
+written out as a KDL layout and the session is started attached in a terminal,
+which is how zellij is meant to be driven. Two consequences:
+
+- `--no-focus` does not apply there; the terminal is how the session comes to
+  exist at all.
+- Pane sizes are fixed when the session is built, and the window does not exist
+  yet to be measured. Twelve panes in a window that turns out small hit zellij's
+  minimum pane size and flatten toward equal splits, so `auto` picks `cinema` on
+  zellij. `--layout grid` still insists.
+
+The generated layout is left at `~/.local/share/hacker-panes/layout-<name>.kdl`,
+so you can read it or start it yourself with `zellij -n`.
 
 ## Window size
 
