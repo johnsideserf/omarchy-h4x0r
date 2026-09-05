@@ -3,7 +3,10 @@
 Notable changes, newest first. The marketplace publishes a specific commit, so
 each release here corresponds to a tag you can point a listing update at.
 
-## [Unreleased]
+## [1.0.0]
+
+First release: a bar widget and popout that build a twelve-pane hacker-movie
+workspace in herdr, tmux or zellij and tear it down again.
 
 ### Added
 - zellij backend. zellij has no ratio-taking split and will not start panes in
@@ -14,22 +17,13 @@ each release here corresponds to a tag you can point a listing update at.
 - `--print-palette`, which prints the resolved `H4X0R_*` colours and exits.
   `scripts/shot.py` uses it instead of keeping its own copy of the table.
 - `--extract`, which writes the pane programs out without building anything.
-
-### Changed
-- `note` output is suppressed when the output is meant to be parsed
-  (`--print-palette`, `--status --json`).
-
-## [1.0.0]
-
-First release: a bar widget and popout that build a twelve-pane hacker-movie
-workspace in herdr or tmux and tear it down again.
-
-### Added
 - Four layouts: `auto` (fits the window), `grid` (12 panes), `cinema` (5),
   `minimal` (3).
 - Seven palettes: the current Omarchy theme by default, plus phosphor, amber,
   ice, crimson, synthwave and mono, applied to the pane programs as well as
   the popout.
+- `note` output is suppressed when the output is meant to be parsed
+  (`--print-palette`, `--status --json`).
 - Staged reveal: panes fill in one at a time, each typing a bring-up line.
 - `scripts/shot.py`, which renders a preview without opening a window by
   reading the panes back as ANSI text and drawing the image itself.

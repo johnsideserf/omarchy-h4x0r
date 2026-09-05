@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "johnsideserf",
   "license": "MIT",
-  "description": "Bar button and phosphor-green popout that spins up a 12-pane 90s hacker-movie workspace in herdr or tmux.",
+  "description": "Bar button and popout that spins up a 12-pane 90s hacker-movie workspace in herdr, tmux or zellij, in your Omarchy theme's colours.",
   "kinds": [
     "bar-widget"
   ],
