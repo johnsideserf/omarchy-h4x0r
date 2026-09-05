@@ -12,8 +12,10 @@ asymmetrically so it reads as a break-in rather than a spreadsheet.
 
 ![the grid layout, matched to the current Omarchy theme](preview.png)
 
-<sub>The grid layout, in the colours of the desktop it is running on — that is
-the default. Six fixed CRT palettes are a click away.</sub>
+<sub>The grid layout, shown on a machine running the <b>Netrunner</b> theme. By
+default h4x0r takes its colours from whatever Omarchy theme you are running, so
+this is red here and something else on your desktop. Six fixed CRT palettes are
+a click away if you would rather it did not follow along.</sub>
 
 ---
 
