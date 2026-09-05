@@ -10,7 +10,7 @@ asymmetrically so it reads as a break-in rather than a spreadsheet.
 
 </div>
 
-![the grid layout in phosphor green](preview.png)
+![the grid layout in phosphor green](preview.webp)
 
 <sub>The grid layout in <code>--palette phosphor</code>. Out of the box h4x0r
 takes its colours from whatever Omarchy theme you are running — see below — and
@@ -69,11 +69,12 @@ to skip the menu rows, or `--keybind` to also bind `SUPER + SHIFT + H`.
 ## Remove
 
 ```bash
-omarchy bar move io.github.johnsideserf.h4x0r --section none 2>/dev/null || true
 omarchy plugin remove io.github.johnsideserf.h4x0r
 rm -f ~/.local/bin/h4x0r
 rm -rf ~/.local/share/hacker-panes
 ```
+
+`omarchy plugin remove` takes the widget off the bar as part of removing it.
 
 If you used `--no-menu`, nothing else was touched. Otherwise delete the two
 `trigger.h4x0r` rows from `~/.config/omarchy/extensions/omarchy-menu.jsonc`,
@@ -153,23 +154,28 @@ layout in a detached tmux session at an exact character size, reads the panes
 back as ANSI text, and draws the image itself.
 
 ```bash
-scripts/shot.py --layout grid --palette theme --out preview.png
-scripts/shot.py --layout cinema --palette phosphor --out docs/cinema.png
+scripts/shot.py --layout grid --palette phosphor --out preview.webp
+scripts/shot.py --layout cinema --palette theme --out /tmp/cinema.png
 ```
 
 `--palette theme` reads the active Omarchy theme, the same as the plugin does,
 so a screenshot shows what the machine it ran on actually looks like.
 
 It generates a matching btop theme on the fly so the monitor pane is in the
-same palette as everything else, and masks IPv4 addresses and your username by
-default (`--no-redact` turns that off). Nothing on your desktop can end up in
-the frame.
+same palette as everything else. No window is opened, so no other application
+can end up in the frame.
+
+In the panes that carry real telemetry it masks addresses, your username, pids
+and the socket table's process column by default; `--no-redact` turns that off.
+The process tables in the monitor and PROC panes are left alone — program
+names and pids are what those panes are, and pids are ephemeral and local. The generated panes are never masked, so the intrusion log's
+invented addresses still read as addresses.
 
 | | |
 |---|---|
-| ![theme-matched](docs/theme.png) | ![amber](docs/amber.png) |
+| ![theme-matched](docs/theme.webp) | ![amber](docs/amber.webp) |
 | `--palette theme`, on the Netrunner theme — the default, so this is red here and your colours on your desktop | `--palette amber`, the P3 CRT palette |
-| ![cinema](docs/cinema.png) | ![split](docs/diptych.png) |
+| ![cinema](docs/cinema.webp) | ![split](docs/diptych.webp) |
 | `--layout cinema`, five larger panes | the same grid either way: phosphor left, theme right |
 
 ## Notes

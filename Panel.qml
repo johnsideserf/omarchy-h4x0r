@@ -13,7 +13,8 @@ import qs.Ui
 Panel {
   id: root
   moduleName: "io.github.johnsideserf.h4x0r"
-  ipcTarget: "h4x0r"
+  // namespaced like every other plugin: a bare name on a shared bus collides
+  ipcTarget: "io.github.johnsideserf.h4x0r"
 
   readonly property string bin: Quickshell.env("HOME") + "/.local/bin/h4x0r"
   // theme-native by default; "phosphor" opts into the classic green-on-black
@@ -186,7 +187,9 @@ Panel {
   // status exits non-zero when nothing is running, so poll on a timer rather
   // than trusting exit codes
   Timer {
-    interval: root.opened ? root.pollSeconds * 1000 : 20000
+    // closed, this only has to notice the icon changing state, and each poll
+    // is a subprocess - so idle far more slowly than when the popout is open
+    interval: root.opened ? root.pollSeconds * 1000 : 60000
     running: true
     repeat: true
     triggeredOnStart: true
