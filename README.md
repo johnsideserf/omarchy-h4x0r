@@ -10,12 +10,11 @@ asymmetrically so it reads as a break-in rather than a spreadsheet.
 
 </div>
 
-![the grid layout, matched to the current Omarchy theme](preview.png)
+![the grid layout in phosphor green](preview.png)
 
-<sub>The grid layout, shown on a machine running the <b>Netrunner</b> theme. By
-default h4x0r takes its colours from whatever Omarchy theme you are running, so
-this is red here and something else on your desktop. Six fixed CRT palettes are
-a click away if you would rather it did not follow along.</sub>
+<sub>The grid layout in <code>--palette phosphor</code>. Out of the box h4x0r
+takes its colours from whatever Omarchy theme you are running — see below — and
+six fixed CRT palettes are a click away in the popout.</sub>
 
 ---
 
@@ -168,10 +167,10 @@ the frame.
 
 | | |
 |---|---|
-| ![phosphor](docs/phosphor.png) | ![amber](docs/amber.png) |
-| `--palette phosphor` | `--palette amber` |
-| ![cinema](docs/cinema.png) | |
-| `--layout cinema` | |
+| ![theme-matched](docs/theme.png) | ![amber](docs/amber.png) |
+| `--palette theme`, on the Netrunner theme — the default, so this is red here and your colours on your desktop | `--palette amber`, the P3 CRT palette |
+| ![cinema](docs/cinema.png) | ![split](docs/diptych.png) |
+| `--layout cinema`, five larger panes | the same grid either way: phosphor left, theme right |
 
 ## Notes
 
